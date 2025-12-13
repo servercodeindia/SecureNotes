@@ -29,6 +29,16 @@ function setupSignalHandlers() {
 }
 
 function getDeploymentUrl() {
+  if (process.env.RENDER_EXTERNAL_URL) {
+    console.log("Using RENDER_EXTERNAL_URL:", process.env.RENDER_EXTERNAL_URL);
+    return process.env.RENDER_EXTERNAL_URL;
+  }
+
+  if (process.env.DEPLOY_URL) {
+    console.log("Using DEPLOY_URL:", process.env.DEPLOY_URL);
+    return process.env.DEPLOY_URL;
+  }
+
   if (process.env.REPLIT_INTERNAL_APP_DOMAIN) {
     const url = `https://${process.env.REPLIT_INTERNAL_APP_DOMAIN}`;
     console.log("Using REPLIT_INTERNAL_APP_DOMAIN:", url);
@@ -42,7 +52,7 @@ function getDeploymentUrl() {
   }
 
   console.error(
-    "ERROR: REPLIT_INTERNAL_APP_DOMAIN and REPLIT_DEV_DOMAIN not set",
+    "ERROR: No deployment URL found. Set RENDER_EXTERNAL_URL, DEPLOY_URL, or run on Replit.",
   );
   process.exit(1);
 }
@@ -94,7 +104,7 @@ async function checkMetroHealth() {
   }
 }
 
-async function startMetro() {
+async function startMetro(deployUrl) {
   const isRunning = await checkMetroHealth();
   if (isRunning) {
     console.log("Metro already running");
@@ -102,9 +112,11 @@ async function startMetro() {
   }
 
   console.log("Starting Metro...");
-  metroProcess = spawn("npm", ["run", "expo:start:static:build"], {
+  const domain = deployUrl.replace(/^https?:\/\//, "");
+  metroProcess = spawn("npx", ["expo", "start", "--no-dev", "--minify", "--localhost"], {
     stdio: ["ignore", "pipe", "pipe"],
     detached: false,
+    env: { ...process.env, EXPO_PUBLIC_DOMAIN: domain },
   });
 
   if (metroProcess.stdout) {
@@ -488,7 +500,7 @@ async function main() {
   prepareDirectories(timestamp);
   clearMetroCache();
 
-  await startMetro();
+  await startMetro(baseUrl);
 
   const downloadTimeout = 300000;
   const downloadPromise = downloadBundlesAndManifests(timestamp);
