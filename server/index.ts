@@ -14,6 +14,7 @@ declare module "http" {
   }
 }
 
+// -------------------- CORS --------------------
 function setupCors(app: express.Application) {
   app.use((req, res, next) => {
     const origins = new Set<string>();
@@ -23,9 +24,7 @@ function setupCors(app: express.Application) {
     }
 
     if (process.env.REPLIT_DOMAINS) {
-      process.env.REPLIT_DOMAINS.split(",").forEach((d) => {
-        origins.add(`https://${d.trim()}`);
-      });
+      process.env.REPLIT_DOMAINS.split(",").forEach((d) => origins.add(`https://${d.trim()}`));
     }
 
     if (process.env.RENDER_EXTERNAL_URL) {
@@ -33,48 +32,40 @@ function setupCors(app: express.Application) {
     }
 
     if (process.env.ALLOWED_ORIGINS) {
-      process.env.ALLOWED_ORIGINS.split(",").forEach((d) => {
-        origins.add(d.trim());
-      });
+      process.env.ALLOWED_ORIGINS.split(",").forEach((d) => origins.add(d.trim()));
     }
 
     const origin = req.header("origin");
-
     if (origin && origins.has(origin)) {
       res.header("Access-Control-Allow-Origin", origin);
-      res.header(
-        "Access-Control-Allow-Methods",
-        "GET, POST, PUT, DELETE, OPTIONS",
-      );
+      res.header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
       res.header("Access-Control-Allow-Headers", "Content-Type");
       res.header("Access-Control-Allow-Credentials", "true");
     }
 
-    if (req.method === "OPTIONS") {
-      return res.sendStatus(200);
-    }
-
+    if (req.method === "OPTIONS") return res.sendStatus(200);
     next();
   });
 }
 
+// -------------------- Body Parsing --------------------
 function setupBodyParsing(app: express.Application) {
   app.use(
     express.json({
       verify: (req, _res, buf) => {
         req.rawBody = buf;
       },
-    }),
+    })
   );
-
   app.use(express.urlencoded({ extended: false }));
 }
 
+// -------------------- Request Logging --------------------
 function setupRequestLogging(app: express.Application) {
   app.use((req, res, next) => {
     const start = Date.now();
-    const path = req.path;
-    let capturedJsonResponse: Record<string, unknown> | undefined = undefined;
+    const reqPath = req.path;
+    let capturedJsonResponse: Record<string, unknown> | undefined;
 
     const originalResJson = res.json;
     res.json = function (bodyJson, ...args) {
@@ -83,18 +74,12 @@ function setupRequestLogging(app: express.Application) {
     };
 
     res.on("finish", () => {
-      if (!path.startsWith("/api")) return;
+      if (!reqPath.startsWith("/api")) return;
 
       const duration = Date.now() - start;
-
-      let logLine = `${req.method} ${path} ${res.statusCode} in ${duration}ms`;
-      if (capturedJsonResponse) {
-        logLine += ` :: ${JSON.stringify(capturedJsonResponse)}`;
-      }
-
-      if (logLine.length > 80) {
-        logLine = logLine.slice(0, 79) + "…";
-      }
+      let logLine = `${req.method} ${reqPath} ${res.statusCode} in ${duration}ms`;
+      if (capturedJsonResponse) logLine += ` :: ${JSON.stringify(capturedJsonResponse)}`;
+      if (logLine.length > 80) logLine = logLine.slice(0, 79) + "…";
 
       log(logLine);
     });
@@ -103,18 +88,11 @@ function setupRequestLogging(app: express.Application) {
   });
 }
 
+// -------------------- Expo Manifest --------------------
 function serveExpoManifest(platform: string, res: Response) {
-  const manifestPath = path.resolve(
-    process.cwd(),
-    "static-build",
-    platform,
-    "manifest.json",
-  );
-
+  const manifestPath = path.resolve(process.cwd(), "dist", "manifest.json");
   if (!fs.existsSync(manifestPath)) {
-    return res
-      .status(404)
-      .json({ error: `Manifest not found for platform: ${platform}` });
+    return res.status(404).json({ error: `Manifest not found for platform: ${platform}` });
   }
 
   res.setHeader("expo-protocol-version", "1");
@@ -125,35 +103,34 @@ function serveExpoManifest(platform: string, res: Response) {
   res.send(manifest);
 }
 
+// -------------------- Static Web / Expo --------------------
 function configureExpoAndLanding(app: express.Application) {
   const isProduction = process.env.NODE_ENV === "production";
   log(`Serving Expo files (production: ${isProduction})`);
 
+  // Expo manifest for mobile apps
   app.use((req: Request, res: Response, next: NextFunction) => {
-    if (req.path.startsWith("/api")) {
-      return next();
-    }
+    if (req.path.startsWith("/api")) return next();
 
     const platform = req.header("expo-platform");
     if (platform && (platform === "ios" || platform === "android")) {
-      if (req.path === "/" || req.path === "/manifest") {
-        return serveExpoManifest(platform, res);
-      }
+      if (req.path === "/" || req.path === "/manifest") return serveExpoManifest(platform, res);
     }
 
     next();
   });
 
+  // Serve assets
   app.use("/assets", express.static(path.resolve(process.cwd(), "assets")));
 
   if (isProduction) {
-    const staticBuildPath = path.resolve(process.cwd(), "static-build", "web");
+    const staticBuildPath = path.resolve(process.cwd(), "dist");
     app.use(express.static(staticBuildPath));
-    
-    app.get("*", (req: Request, res: Response, next: NextFunction) => {
-      if (req.path.startsWith("/api")) {
-        return next();
-      }
+
+    // SPA fallback
+    app.get("*", (req: Request, res: Response) => {
+      if (req.path.startsWith("/api")) return;
+
       const indexPath = path.join(staticBuildPath, "index.html");
       if (fs.existsSync(indexPath)) {
         res.sendFile(indexPath);
@@ -161,8 +138,10 @@ function configureExpoAndLanding(app: express.Application) {
         res.status(404).send("App not built. Run npm run expo:static:build first.");
       }
     });
-    log("Serving static build from static-build/web");
+
+    log("Serving static build from dist");
   } else {
+    // Proxy dev requests to Metro bundler
     app.use(
       createProxyMiddleware({
         target: "http://localhost:8081",
@@ -180,23 +159,18 @@ function configureExpoAndLanding(app: express.Application) {
   }
 }
 
+// -------------------- Error Handler --------------------
 function setupErrorHandler(app: express.Application) {
   app.use((err: unknown, _req: Request, res: Response, _next: NextFunction) => {
-    const error = err as {
-      status?: number;
-      statusCode?: number;
-      message?: string;
-    };
-
+    const error = err as { status?: number; statusCode?: number; message?: string };
     const status = error.status || error.statusCode || 500;
     const message = error.message || "Internal Server Error";
-
     res.status(status).json({ message });
-
     throw err;
   });
 }
 
+// -------------------- Initialize Server --------------------
 (async () => {
   setupCors(app);
   setupBodyParsing(app);
@@ -216,7 +190,8 @@ function setupErrorHandler(app: express.Application) {
       reusePort: true,
     },
     () => {
-      log(`express server serving on port ${port}`);
-    },
+      log(`Express server serving on port ${port}`);
+    }
   );
 })();
+
